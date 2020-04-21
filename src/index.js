@@ -1,6 +1,6 @@
 import { readFile } from 'fs'
-import { createServer as createHttpsServer } from 'https'
-import { createServer } from 'http'
+import https, { createServer as createHttpsServer } from 'https'
+import http, { createServer } from 'http'
 import { resolve } from 'path'
 
 import mime from 'mime'
@@ -21,7 +21,17 @@ function serve (options = { contentBase: '' }) {
   options.headers = options.headers || {}
   options.https = options.https || false
   options.openPage = options.openPage || ''
+  options.proxy = options.proxy || {}
   mime.default_type = 'text/plain'
+
+  // Use http or https as needed
+  const scheme = options.https ? https : http
+
+  const proxies = Object.keys(options.proxy).map(proxy => ({
+    proxy,
+    destination: options.proxy[proxy],
+    test: new RegExp(`${proxy}`)
+  }))
 
   const requestListener = (request, response) => {
     // Remove querystring
@@ -31,31 +41,62 @@ function serve (options = { contentBase: '' }) {
       response.setHeader(key, options.headers[key])
     })
 
-    readFileFromContentBase(options.contentBase, urlPath, function (error, content, filePath) {
-      if (!error) {
-        return found(response, filePath, content)
-      }
-      if (error.code !== 'ENOENT') {
-        response.writeHead(500)
-        response.end('500 Internal Server Error' +
-          '\n\n' + filePath +
-          '\n\n' + Object.values(error).join('\n') +
-          '\n\n(rollup-plugin-serve)', 'utf-8')
-        return
-      }
-      if (options.historyApiFallback) {
-        const fallbackPath = typeof options.historyApiFallback === 'string' ? options.historyApiFallback : '/index.html'
-        readFileFromContentBase(options.contentBase, fallbackPath, function (error, content, filePath) {
-          if (error) {
-            notFound(response, filePath)
-          } else {
-            found(response, filePath, content)
-          }
-        })
-      } else {
-        notFound(response, filePath)
-      }
-    })
+    // Find the appropriate proxy for the request if one exists
+    const proxy = proxies.find(({ test }) => request.url.match(test))
+
+    // If a proxy exists, forward the request to the appropriate server
+    if (proxy && proxy.destination) {
+      const { destination } = proxy
+      const newDestination = `${destination}${request.url}`
+      const { headers, method } = request
+
+      // Get the request contents
+      let body = ''
+      request.on('data', chunk => { body += chunk })
+
+      // Forward the request
+      request.on('end', () => {
+        const proxyRequest = scheme
+          .request(newDestination, { headers, method }, (proxyResponse) => {
+            let data = ''
+            proxyResponse.on('data', chunk => { data += chunk })
+            proxyResponse.on('end', () => {
+              Object.keys(proxyResponse.headers).forEach(key => response.setHeader(key, proxyResponse.headers[key]))
+              foundProxy(response, proxyResponse.statusCode, data)
+            })
+          })
+          .end(body, 'utf-8')
+
+        proxyRequest.on('error', err => console.error(`There was a problem with the request for ${request.url}: ${err}`))
+        proxyRequest.end()
+      })
+    } else {
+      readFileFromContentBase(options.contentBase, urlPath, function (error, content, filePath) {
+        if (!error) {
+          return found(response, filePath, content)
+        }
+        if (error.code !== 'ENOENT') {
+          response.writeHead(500)
+          response.end('500 Internal Server Error' +
+            '\n\n' + filePath +
+            '\n\n' + Object.values(error).join('\n') +
+            '\n\n(rollup-plugin-serve)', 'utf-8')
+          return
+        }
+        if (options.historyApiFallback) {
+          const fallbackPath = typeof options.historyApiFallback === 'string' ? options.historyApiFallback : '/index.html'
+          readFileFromContentBase(options.contentBase, fallbackPath, function (error, content, filePath) {
+            if (error) {
+              notFound(response, filePath)
+            } else {
+              found(response, filePath, content)
+            }
+          })
+        } else {
+          notFound(response, filePath)
+        }
+      })
+    }
   }
 
   // release previous server instance if rollup is reloading configuration in watch mode
@@ -130,11 +171,16 @@ function found (response, filePath, content) {
   response.end(content, 'utf-8')
 }
 
+function foundProxy (response, status, content) {
+  response.writeHead(status)
+  response.end(content, 'utf-8')
+}
+
 function green (text) {
   return '\u001b[1m\u001b[32m' + text + '\u001b[39m\u001b[22m'
 }
 
-function closeServerOnTermination() {
+function closeServerOnTermination () {
   const terminationSignals = ['SIGINT', 'SIGTERM', 'SIGQUIT', 'SIGHUP']
   terminationSignals.forEach(signal => {
     process.on(signal, () => {
