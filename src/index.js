@@ -24,8 +24,8 @@ function serve (options = { contentBase: '' }) {
   options.proxy = options.proxy || {}
   mime.default_type = 'text/plain'
 
-  // Use http or https as needed
-  const scheme = options.https ? https : http
+  // Always proxy to http
+  const scheme = http
 
   const proxies = Object.keys(options.proxy).map(proxy => ({
     proxy,
