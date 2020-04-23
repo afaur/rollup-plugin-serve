@@ -1,5 +1,5 @@
 import { readFile } from 'fs'
-import https, { createServer as createHttpsServer } from 'https'
+import { createServer as createHttpsServer } from 'https'
 import http, { createServer } from 'http'
 import { resolve } from 'path'
 
